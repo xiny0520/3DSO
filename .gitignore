@@ -1,0 +1,25 @@
+# Build outputs
+/build*/
+/cmake-build-*/
+/out/
+
+# Benchmark and generated data
+/benchmark_runs/
+/data/*.las
+*.csv
+
+# Local backup made during refactors
+/.refactor_backup/
+
+# Python helper caches
+/__pycache__/
+*.py[cod]
+
+# Editor and OS files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini

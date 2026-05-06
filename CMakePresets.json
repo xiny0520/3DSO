@@ -1,0 +1,69 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Portable Release",
+      "description": "Portable, reproducible Release build. Use this for paper results.",
+      "binaryDir": "${sourceDir}/build_release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "DSO_ENABLE_IPO": "ON",
+        "DSO_ENABLE_AVX2": "ON",
+        "DSO_ENABLE_NATIVE": "OFF",
+        "DSO_ENABLE_FAST_MATH": "OFF",
+        "DSO_PGO_MODE": "OFF"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "binaryDir": "${sourceDir}/build_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "DSO_ENABLE_IPO": "OFF",
+        "DSO_ENABLE_AVX2": "OFF",
+        "DSO_ENABLE_NATIVE": "OFF",
+        "DSO_ENABLE_FAST_MATH": "OFF",
+        "DSO_PGO_MODE": "OFF"
+      }
+    },
+    {
+      "name": "benchmark-native",
+      "displayName": "Native Benchmark Release",
+      "description": "Machine-specific benchmark build. Do not use for portable paper binaries.",
+      "binaryDir": "${sourceDir}/build_benchmark_native",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "DSO_ENABLE_IPO": "ON",
+        "DSO_ENABLE_AVX2": "ON",
+        "DSO_ENABLE_NATIVE": "ON",
+        "DSO_ENABLE_FAST_MATH": "ON",
+        "DSO_PGO_MODE": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "configuration": "Release"
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "benchmark-native",
+      "configurePreset": "benchmark-native",
+      "configuration": "Release"
+    }
+  ]
+}
+

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            generator: "Visual Studio 17 2022"
+            build_dir: build_ci_vs
+          - os: ubuntu-latest
+            generator: "Unix Makefiles"
+            build_dir: build_ci
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B ${{ matrix.build_dir }} -G "${{ matrix.generator }}" -DDSO_ENABLE_IPO=OFF -DDSO_ENABLE_AVX2=OFF
+
+      - name: Build
+        run: cmake --build ${{ matrix.build_dir }} --config Release
+
+      - name: Regression tests on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\tests\run_regression.ps1 -Executable .\${{ matrix.build_dir }}\Release\3dso.exe -DataDir .\data -Threads 1
+
+      - name: Smoke test on Linux
+        if: runner.os == 'Linux'
+        run: |
+          ./build_ci/3dso --help
+          mkdir -p results
+          ./build_ci/3dso --input-dir data --output-csv results/sample.csv --k-voxel 3 --voxel-size 0.3 --block-ratio 5 --plot-size 1 2 2 --threads 1 --limit 1
+
