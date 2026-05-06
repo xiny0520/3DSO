@@ -4,13 +4,38 @@
 
 It reads `.las`, `.xyz`, and `.txt` files, voxelizes each plot, extracts canonical 3D block patterns, and writes one CSV row per input file.
 
-## Quick Start
+## Environment
 
-Build on Windows:
+To build the executable from source, prepare a C++ build environment first.
+
+On Windows, install:
+
+- Visual Studio 2022 or newer
+- The "Desktop development with C++" workload
+- CMake tools, included with Visual Studio or installed separately
+
+Then open PowerShell in the repository root and run:
 
 ```powershell
 .\build_3dso.cmd -RunTests
 ```
+
+This creates:
+
+```text
+build_release_vs/Release/3dso.exe
+```
+
+On Linux or other platforms, use any C++20 compiler with CMake 3.21+:
+
+```powershell
+cmake --preset release
+cmake --build --preset release
+```
+
+See [docs/build.md](docs/build.md) for the detailed build guide.
+
+## Quick Start
 
 Run the bundled sample:
 
@@ -25,15 +50,6 @@ Run the bundled sample:
   --threads 1 `
   --limit 1
 ```
-
-Manual CMake build:
-
-```powershell
-cmake --preset release
-cmake --build --preset release
-```
-
-See [docs/build.md](docs/build.md) for full build and release instructions.
 
 ## Input
 
