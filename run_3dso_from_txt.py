@@ -15,7 +15,7 @@ def main() -> None:
     parser.add_argument("--executable", type=Path, default=default_executable(root))
     parser.add_argument("--output-csv", type=Path, default=root / "results" / "single_file.csv")
     parser.add_argument("--k-voxel", type=int, default=3)
-    parser.add_argument("--voxel-size", type=float, default=0.3)
+    parser.add_argument("--voxel-size", type=float, default=0.1)
     parser.add_argument("--block-ratio", type=int, default=5)
     parser.add_argument("--plot-size", nargs=3, default=["1", "25", "25"], metavar=("MODE", "X", "Y"))
     parser.add_argument("--threads", type=int, default=1)

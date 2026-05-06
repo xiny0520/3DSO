@@ -1791,7 +1791,6 @@ static FileResult process_one_file(
     }
 
     const std::array<int, 3>& active_dims = using_direct_packed ? direct_packed.packed.dims : vg.dims;
-    const std::array<double, 3>& active_grid_range = using_direct_packed ? direct_packed.grid_range : vg.grid_range;
     const double range_x = using_direct_packed ? direct_packed.range_x : vg.range_x;
     const double range_y = using_direct_packed ? direct_packed.range_y : vg.range_y;
 
@@ -1827,7 +1826,12 @@ static FileResult process_one_file(
     result.base_area = range_x * range_y;
 
     double soe_sum = 0.0;
-    const EntropyGridInfo entropy_info = make_entropy_grid_info(active_grid_range, nx, ny, nz);
+    const std::array<double, 3> entropy_grid_range = {
+        range_x,
+        range_y,
+        std::max(result.hr98, stat_grid_size)
+    };
+    const EntropyGridInfo entropy_info = make_entropy_grid_info(entropy_grid_range, nx, ny, nz);
     std::vector<int> global_cell_counts(static_cast<std::size_t>(entropy_info.cell_count), 0);
     const double block_center_offset = (static_cast<double>(half_k) + 0.5) * voxel_size;
 

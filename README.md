@@ -44,7 +44,7 @@ Run the bundled sample:
   --input-dir .\data `
   --output-csv .\results\sample.csv `
   --k-voxel 3 `
-  --voxel-size 0.3 `
+  --voxel-size 0.1 `
   --block-ratio 5 `
   --plot-size 1 2 2 `
   --threads 1 `
@@ -75,7 +75,7 @@ Whitespace and comma separators are accepted.
 --input-dir DIR        Input directory
 --output-csv FILE      Output CSV path
 --k-voxel INT          Block edge length in voxels, default 3
---voxel-size FLOAT     Voxel size in meters, default 0.3
+--voxel-size FLOAT     Voxel size in meters, default 0.1
 --block-ratio INT      Spatial grid multiplier, default 5
 --plot-size MODE X Y   MODE 0=auto, MODE 1=manual plot size
 --layers INT           Optional height-layer outputs

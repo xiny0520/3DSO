@@ -9,7 +9,7 @@ struct CliArgs {
     std::filesystem::path input_dir = "data";
     std::filesystem::path output_csv = std::filesystem::path("results") / "3DSO_results.csv";
     int k_voxel = 3;
-    double voxel_size = 0.3;
+    double voxel_size = 0.1;
     int block_ratio = 5;
     int plot_size_mode = 1;
     double plot_size_x = 25.0;

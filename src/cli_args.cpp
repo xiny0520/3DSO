@@ -13,7 +13,7 @@ void print_usage(std::ostream& os) {
         << "  --input-dir DIR        Input directory with .xyz, .txt, or .las files\n"
         << "  --output-csv FILE      Output CSV path\n"
         << "  --k-voxel INT          Block size (default: 3)\n"
-        << "  --voxel-size FLOAT     Voxel size in meters (default: 0.3)\n"
+        << "  --voxel-size FLOAT     Voxel size in meters (default: 0.1)\n"
         << "  --block-ratio INT      Spatial entropy grid ratio (default: 5)\n"
         << "  --plot-size MODE X Y   Plot size: MODE 0=auto, 1=manual (default: 1 25 25)\n"
         << "  --layers INT           Split into N height layers, 0=off\n"

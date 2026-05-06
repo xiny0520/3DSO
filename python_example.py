@@ -17,7 +17,7 @@ def main() -> None:
         "--k-voxel",
         "3",
         "--voxel-size",
-        "0.3",
+        "0.1",
         "--block-ratio",
         "5",
         "--plot-size",

@@ -6,7 +6,7 @@ param(
     [int]$Repeats = 3,
     [switch]$SkipWarmup,
     [int]$KVoxel = 3,
-    [double]$VoxelSize = 0.3,
+    [double]$VoxelSize = 0.1,
     [int]$BlockRatio = 5,
     [int]$PlotSizeMode = 1,
     [double]$PlotSizeX = 25.0,
