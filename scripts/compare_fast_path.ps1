@@ -62,7 +62,7 @@ if ($baseline.Count -ne $fast.Count) {
 $exactColumns = @("PlotID", "SourceFile", "NumPatterns", "TotalBlocks", "Nx", "Ny", "Nz", "NumPoints", "Status")
 $numericColumns = @(
     "3DSO", "3DSO_raw", "Iw_total", "Ib_total", "Ic_total",
-    "H_sp_Global", "H_sp_Global_norm", "HR98", "BaseArea"
+    "HR98", "BaseArea"
 )
 
 $differences = @()

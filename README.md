@@ -251,8 +251,6 @@ SourceFile
 Iw_total
 Ib_total
 Ic_total
-H_sp_Global
-H_sp_Global_norm
 NumPatterns
 TotalBlocks
 HR98

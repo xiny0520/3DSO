@@ -36,7 +36,7 @@ static std::string csv_escape(std::string_view value) {
 
 static std::string build_csv_header(int layer_count) {
     std::string header =
-        "PlotID,SourceFile,3DSO,3DSO_raw,Iw_total,Ib_total,Ic_total,H_sp_Global,H_sp_Global_norm,"
+        "PlotID,SourceFile,3DSO,3DSO_raw,Iw_total,Ib_total,Ic_total,"
         "NumPatterns,TotalBlocks,HR98,BaseArea,Nx,Ny,Nz,NumPoints,Status";
     for (int li = 0; li < layer_count; ++li) {
         header += ",3DSO_L" + std::to_string(li + 1);
@@ -96,7 +96,6 @@ bool write_results_csv(
         fout << csv_escape(result.plot_id) << "," << csv_escape(result.source_file) << ","
              << result.DSO << "," << result.DSO_raw << ","
              << result.Iw_total << "," << result.Ib_total << "," << result.Ic_total << ","
-             << result.H_sp_Global << "," << result.H_sp_Global_norm << ","
              << result.num_patterns << "," << result.total_blocks << ","
              << result.hr98 << "," << result.base_area << ","
              << result.grid_nx << "," << result.grid_ny << "," << result.grid_nz << ","
