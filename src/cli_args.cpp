@@ -12,14 +12,11 @@ void print_usage(std::ostream& os) {
         << "Usage: 3dso [options]\n"
         << "  --input-dir DIR        Input directory with .xyz, .txt, or .las files\n"
         << "  --output-csv FILE      Output CSV path\n"
-        << "  --k-voxel INT          Block size (default: 3)\n"
+        << "  --k-voxel INT          Block size, supported 3, 5, or 7 (default: 3; >3 is expensive)\n"
         << "  --voxel-size FLOAT     Voxel size in meters (default: 0.1)\n"
         << "  --block-ratio INT      Spatial entropy grid ratio (default: 5)\n"
         << "  --plot-size MODE X Y   Plot size: MODE 0=auto, 1=manual (default: 1 25 25)\n"
         << "  --layers INT           Split into N height layers, 0=off\n"
-        << "  --experimental-direct-las  Experimental direct LAS voxelization path (currently slower and may change results)\n"
-        << "  --experimental-packed-columns  Force packed z-column storage on non-direct paths for k=3 blocks\n"
-        << "  --disable-direct-packed-las  Disable the default exact packed LAS fast path\n"
         << "  --verbose              Print per-file status lines during processing\n"
         << "  --profile-phases       Print aggregated phase timings after processing\n"
         << "  --threads INT          Thread count, 0=all\n"
@@ -83,12 +80,6 @@ CliArgs parse_args(int argc, char* argv[]) {
             args.limit = parse_int_arg(next("--limit"), "--limit");
         } else if (arg == "--layers") {
             args.layers = parse_int_arg(next("--layers"), "--layers");
-        } else if (arg == "--experimental-direct-las") {
-            args.experimental_direct_las = true;
-        } else if (arg == "--experimental-packed-columns") {
-            args.experimental_packed_columns = true;
-        } else if (arg == "--disable-direct-packed-las") {
-            args.disable_direct_packed_las = true;
         } else if (arg == "--verbose") {
             args.verbose = true;
         } else if (arg == "--profile-phases") {

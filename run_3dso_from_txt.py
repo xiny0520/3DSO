@@ -27,7 +27,7 @@ def main() -> None:
         raise FileNotFoundError(f"Executable not found: {args.executable}")
 
     # The CLI processes directories, so create a temporary directory containing one file link/copy.
-    with tempfile.TemporaryDirectory(prefix="sc3d_single_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="3dso_single_") as tmp:
         tmp_dir = Path(tmp)
         target = tmp_dir / args.point_file.name
         try:

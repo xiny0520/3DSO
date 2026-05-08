@@ -17,9 +17,6 @@ struct CliArgs {
     int threads = 0;
     int limit = 0;
     int layers = 0;
-    bool experimental_direct_las = false;
-    bool experimental_packed_columns = false;
-    bool disable_direct_packed_las = false;
     bool verbose = false;
     bool profile_phases = false;
     bool show_help = false;

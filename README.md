@@ -69,12 +69,18 @@ x y z
 
 Whitespace and comma separators are accepted.
 
+Input point clouds should be preprocessed and height-normalized before running
+3DSO; the z coordinate is expected to represent height above ground. The tool
+does not perform denoising, ground classification, or height normalization.
+Each input file is treated as one plot; plot clipping or tiling should be
+completed before running the tool.
+
 ## Main Options
 
 ```text
 --input-dir DIR        Input directory
 --output-csv FILE      Output CSV path
---k-voxel INT          Block edge length in voxels, default 3
+--k-voxel INT          Block edge length in voxels, supported 3, 5, or 7, default 3
 --voxel-size FLOAT     Voxel size in meters, default 0.1
 --block-ratio INT      Spatial grid multiplier, default 5
 --plot-size MODE X Y   MODE 0=auto, MODE 1=manual plot size
@@ -82,6 +88,11 @@ Whitespace and comma separators are accepted.
 --threads INT          OpenMP thread count, 0=default/max
 --limit INT            Optional file-count limit
 ```
+
+`--k-voxel 3` is the paper baseline and recommended setting. Only odd block
+sizes `3`, `5`, and `7` are supported so each block has a central voxel.
+Larger values can become very expensive in memory and runtime; `--k-voxel 7`
+should only be used on small inputs or controlled tests.
 
 Run `3dso --help` for the complete option list.
 
@@ -93,14 +104,9 @@ The CSV contains:
 PlotID
 SourceFile
 3DSO
-3DSO_raw
-Iw_total
-Ib_total
-Ic_total
 NumPatterns
 TotalBlocks
 HR98
-BaseArea
 Nx
 Ny
 Nz
@@ -108,16 +114,23 @@ NumPoints
 Status
 ```
 
+`3DSO` is the final area-normalized structural organization metric. `NumPatterns`
+is the number of observed canonical pattern types, and `TotalBlocks` is the
+number of non-empty local blocks used in the calculation. `HR98`, `Nx`, `Ny`,
+and `Nz` describe the H98-based spatial-deployment grid. `NumPoints` reports
+the number of input points read from the file.
+
 When `--layers N` is enabled, layer-level columns are appended:
 
 ```text
 3DSO_L1 ... 3DSO_LN
-Ic_L1 ... Ic_LN
-Hsp_L1 ... Hsp_LN
 Npts_L1 ... Npts_LN
 ```
 
 Common `Status` values are `ok`, `empty_input`, `invalid_plot_range`, `no_valid_points`, and `no_patterns`.
+`alloc_error` means the voxel grid, pattern table, or layer calculation ran out
+of memory; use a larger `--voxel-size`, the baseline `--k-voxel 3`, fewer
+`--threads`, or smaller plot/input files.
 
 ## Validation
 
@@ -128,17 +141,6 @@ Run the regression checks:
   -Executable .\build_release_vs\Release\3dso.exe `
   -DataDir .\data `
   -Threads 1
-```
-
-If representative LAS files are available, compare the default LAS fast path with the conservative path:
-
-```powershell
-.\scripts\compare_fast_path.ps1 `
-  -Executable .\build_release_vs\Release\3dso.exe `
-  -InputDir .\data `
-  -OutputDir .\build_fast_path_check `
-  -Limit 0 `
-  -Threads 8
 ```
 
 ## Notes For Reproducible Use

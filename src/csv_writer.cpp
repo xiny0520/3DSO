@@ -36,16 +36,9 @@ static std::string csv_escape(std::string_view value) {
 
 static std::string build_csv_header(int layer_count) {
     std::string header =
-        "PlotID,SourceFile,3DSO,3DSO_raw,Iw_total,Ib_total,Ic_total,"
-        "NumPatterns,TotalBlocks,HR98,BaseArea,Nx,Ny,Nz,NumPoints,Status";
+        "PlotID,SourceFile,3DSO,NumPatterns,TotalBlocks,HR98,Nx,Ny,Nz,NumPoints,Status";
     for (int li = 0; li < layer_count; ++li) {
         header += ",3DSO_L" + std::to_string(li + 1);
-    }
-    for (int li = 0; li < layer_count; ++li) {
-        header += ",Ic_L" + std::to_string(li + 1);
-    }
-    for (int li = 0; li < layer_count; ++li) {
-        header += ",Hsp_L" + std::to_string(li + 1);
     }
     for (int li = 0; li < layer_count; ++li) {
         header += ",Npts_L" + std::to_string(li + 1);
@@ -57,14 +50,6 @@ static void write_layer_values(std::ofstream& fout, const FileResult& result, in
     for (int li = 0; li < layer_count; ++li) {
         const auto idx = static_cast<std::size_t>(li);
         fout << "," << ((idx < result.layers.size()) ? result.layers[idx].DSO : 0.0);
-    }
-    for (int li = 0; li < layer_count; ++li) {
-        const auto idx = static_cast<std::size_t>(li);
-        fout << "," << ((idx < result.layers.size()) ? result.layers[idx].Ic : 0.0);
-    }
-    for (int li = 0; li < layer_count; ++li) {
-        const auto idx = static_cast<std::size_t>(li);
-        fout << "," << ((idx < result.layers.size()) ? result.layers[idx].Hsp_norm : 0.0);
     }
     for (int li = 0; li < layer_count; ++li) {
         const auto idx = static_cast<std::size_t>(li);
@@ -94,10 +79,9 @@ bool write_results_csv(
 
     for (const auto& result : results) {
         fout << csv_escape(result.plot_id) << "," << csv_escape(result.source_file) << ","
-             << result.DSO << "," << result.DSO_raw << ","
-             << result.Iw_total << "," << result.Ib_total << "," << result.Ic_total << ","
+             << result.DSO << ","
              << result.num_patterns << "," << result.total_blocks << ","
-             << result.hr98 << "," << result.base_area << ","
+             << result.hr98 << ","
              << result.grid_nx << "," << result.grid_ny << "," << result.grid_nz << ","
              << result.num_points << "," << csv_escape(result.status);
         write_layer_values(fout, result, layer_count);

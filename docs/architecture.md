@@ -19,7 +19,6 @@ This project is organized as a small command-line application backed by a reusab
 
 ## Performance Notes
 
-- The common LAS `k=3` path writes directly into packed z-column storage while preserving the default float-coordinate voxelization semantics.
 - The common `k=3` block path uses compact 64-bit fingerprints.
 - Rotation maps are precomputed once per run.
 - Spatial entropy uses dense count buffers in the hot path.
@@ -35,7 +34,7 @@ This project is organized as a small command-line application backed by a reusab
 - `src/csv_writer.cpp`: CSV header generation, escaping, and row output.
 - `src/tdso_engine.cpp`: implementation of input discovery, reading, voxelization, pattern encoding, entropy, and orchestration.
 
-The implementation is intentionally conservative: the current refactor improves project boundaries without changing the numerical algorithm.
+The implementation is intentionally conservative: all supported input formats use the same read-points, voxelize, and compute path.
 
 
 

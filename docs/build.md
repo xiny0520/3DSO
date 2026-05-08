@@ -88,18 +88,6 @@ Run the regression suite after every source or build-system change:
   -Threads 1
 ```
 
-If representative `.las` files are present in `data/`, validate the default LAS fast path against the conservative path:
-
-```powershell
-.\scripts\compare_fast_path.ps1 `
-  -Executable .\build_release_vs\Release\3dso.exe `
-  -InputDir .\data `
-  -OutputDir .\build_fast_path_check `
-  -Limit 0 `
-  -Threads 8 `
-  -Tolerance 1e-9
-```
-
 ## Build Options
 
 ```text
@@ -132,10 +120,9 @@ Before tagging or uploading a release:
 
 1. Build Portable Release.
 2. Run `tests/run_regression.ps1`.
-3. Run `scripts/compare_fast_path.ps1` on representative LAS data.
-4. Save compiler version, CMake version, OS, CPU, thread count, and CMake options.
-5. Record dataset name/version/checksum for benchmark results.
-6. Confirm generated CSV files are not committed.
+3. Save compiler version, CMake version, OS, CPU, thread count, and CMake options.
+4. Record dataset name/version/checksum for benchmark results.
+5. Confirm generated CSV files are not committed.
 
 This checklist is intentionally small. A reader should be able to reproduce the build and understand which performance options were used.
 

@@ -20,6 +20,7 @@
 #include <mutex>
 #include <new>
 #include <numeric>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -56,16 +57,11 @@ struct Point3f {
 struct VoxelGrid {
     std::vector<uint8_t> data;
     std::array<int, 3> dims{1, 1, 1};
+    std::array<double, 3> origin{0.0, 0.0, 0.0};
     std::array<double, 3> grid_range{0.0, 0.0, 0.0};
     double range_x = 0.0;
     double range_y = 0.0;
     bool has_valid_points = false;
-};
-
-struct PackedColumnGrid {
-    std::vector<uint64_t> words;
-    std::array<int, 3> dims{1, 1, 1};
-    int words_per_column = 1;
 };
 
 struct ReadResult {
@@ -74,27 +70,6 @@ struct ReadResult {
     std::size_t num_points = 0;
     double read_io_s = 0.0;
     double read_decode_s = 0.0;
-    double read_percentile_s = 0.0;
-};
-
-struct LasDirectResult {
-    VoxelGrid vg;
-    double hr98 = 0.0;
-    std::size_t num_points = 0;
-    bool ok = false;
-};
-
-struct PackedLasResult {
-    PackedColumnGrid packed;
-    std::array<double, 3> grid_range{0.0, 0.0, 0.0};
-    double range_x = 0.0;
-    double range_y = 0.0;
-    double hr98 = 0.0;
-    std::size_t num_points = 0;
-    bool ok = false;
-    double read_io_s = 0.0;
-    double read_decode_s = 0.0;
-    double read_pack_write_s = 0.0;
     double read_percentile_s = 0.0;
 };
 
@@ -176,14 +151,14 @@ struct PatternStats {
     std::vector<std::array<double, 3>> coords;
 };
 
-struct PackedFingerprint {
+struct PatternFingerprint {
     std::vector<uint64_t> words;
 
-    bool operator==(const PackedFingerprint& other) const noexcept {
+    bool operator==(const PatternFingerprint& other) const noexcept {
         return words == other.words;
     }
 
-    bool operator<(const PackedFingerprint& other) const noexcept {
+    bool operator<(const PatternFingerprint& other) const noexcept {
         return words < other.words;
     }
 };
@@ -194,10 +169,6 @@ static constexpr std::array<RotationMap, 8> kRotationMaps = {
     RotationMap{{1, 0, 2}, {-1, -1, -1}}, RotationMap{{0, 1, 2}, {-1, 1, -1}},
     RotationMap{{1, 0, 2}, {1, 1, -1}},   RotationMap{{0, 1, 2}, {1, -1, -1}},
 };
-
-static constexpr int flatten3_constexpr(int x, int y, int z, int k) {
-    return (x * k + y) * k + z;
-}
 
 static constexpr std::array<std::array<uint8_t, 9>, 8> build_k3_column_maps() {
     std::array<std::array<uint8_t, 9>, 8> maps{};
@@ -227,8 +198,8 @@ static constexpr std::array<std::array<uint8_t, 9>, 8> build_k3_column_maps() {
 
 static constexpr std::array<std::array<uint8_t, 9>, 8> kRotationColumnMapsK3 = build_k3_column_maps();
 
-struct PackedFingerprintHash {
-    std::size_t operator()(const PackedFingerprint& fp) const noexcept {
+struct PatternFingerprintHash {
+    std::size_t operator()(const PatternFingerprint& fp) const noexcept {
         std::size_t h = 1469598103934665603ull;
         for (uint64_t w : fp.words) {
             h ^= static_cast<std::size_t>(w + 0x9e3779b97f4a7c15ull);
@@ -272,6 +243,30 @@ struct FastBlockEncoder {
 
 static inline std::size_t flatten3(int x, int y, int z, const std::array<int, 3>& dims) {
     return static_cast<std::size_t>((x * dims[1] + y) * dims[2] + z);
+}
+
+static int voxel_dim_for_inclusive_range(double range, double voxel_size) {
+    if (!(range > 0.0) || !(voxel_size > 0.0)) {
+        return 1;
+    }
+
+    const double scaled = range / voxel_size;
+    if (!std::isfinite(scaled) || scaled > static_cast<double>(std::numeric_limits<int>::max() - 1)) {
+        throw std::runtime_error("voxel grid dimension is too large");
+    }
+
+    const double eps = std::max(1e-9, std::abs(scaled) * 1e-12);
+    return std::max(1, static_cast<int>(std::floor(scaled + eps)) + 1);
+}
+
+static bool within_inclusive_extent(double value, double range) {
+    const double eps = std::max(1e-9, std::abs(range) * 1e-12);
+    return value >= -eps && value <= range + eps;
+}
+
+static int voxel_index_clamped(double offset, double voxel_size, int dim) {
+    const int idx = static_cast<int>(std::floor(offset / voxel_size));
+    return std::clamp(idx, 0, dim - 1);
 }
 
 static bool cpu_supports_avx2() {
@@ -701,412 +696,6 @@ static ReadResult read_las(const fs::path& path) {
     return read_las_streamed(path);
 }
 
-template <typename PointCallback>
-static std::size_t for_each_las_point_chunked(
-    std::ifstream& fin,
-    const LasHeader& header,
-    std::vector<char>& chunk_buffer,
-    std::size_t max_points,
-    PointCallback&& callback
-) {
-    const std::size_t record_size = static_cast<std::size_t>(header.point_record_length);
-    if (record_size == 0) {
-        return 0;
-    }
-
-    const std::size_t records_per_chunk = chunk_buffer.size() / record_size;
-    if (records_per_chunk == 0) {
-        return 0;
-    }
-
-    std::size_t processed = 0;
-    while (processed < max_points) {
-        const std::size_t records_to_read = std::min(max_points - processed, records_per_chunk);
-        const std::size_t bytes_to_read = records_to_read * record_size;
-        fin.read(chunk_buffer.data(), static_cast<std::streamsize>(bytes_to_read));
-        const std::streamsize bytes_read = fin.gcount();
-        if (bytes_read <= 0) {
-            break;
-        }
-
-        const std::size_t records_read = static_cast<std::size_t>(bytes_read) / record_size;
-        const char* record_ptr = chunk_buffer.data();
-        for (std::size_t i = 0; i < records_read; ++i, record_ptr += record_size) {
-            const int32_t xi = load_le<int32_t>(record_ptr);
-            const int32_t yi = load_le<int32_t>(record_ptr + 4);
-            const int32_t zi = load_le<int32_t>(record_ptr + 8);
-            callback(xi, yi, zi);
-        }
-        processed += records_read;
-        if (records_read < records_to_read || !fin) {
-            break;
-        }
-    }
-    return processed;
-}
-
-static LasDirectResult read_las_direct_to_voxel_grid(
-    const fs::path& path,
-    double voxel_size,
-    int plot_size_mode,
-    double plot_size_x,
-    double plot_size_y
-) {
-    LasDirectResult result;
-    std::vector<char> stream_buffer(1 << 20);
-    std::ifstream fin(path, std::ios::binary);
-    if (!fin.is_open()) {
-        return result;
-    }
-    fin.rdbuf()->pubsetbuf(stream_buffer.data(), static_cast<std::streamsize>(stream_buffer.size()));
-
-    LasHeader header;
-    if (!read_las_header(fin, header)) {
-        return result;
-    }
-
-    const std::size_t header_points = static_cast<std::size_t>(header.number_of_points);
-    if (header_points == 0 || header_points > 100000000ull) {
-        return result;
-    }
-
-    const std::size_t record_size = static_cast<std::size_t>(header.point_record_length);
-    const std::size_t target_chunk_bytes = 8ull * 1024ull * 1024ull;
-    const std::size_t records_per_chunk = std::max<std::size_t>(1, target_chunk_bytes / record_size);
-    std::vector<char> chunk_buffer(records_per_chunk * record_size);
-    std::vector<float> z_vals;
-    z_vals.reserve(header_points);
-
-    double min_x = std::numeric_limits<double>::max();
-    double min_y = std::numeric_limits<double>::max();
-    double min_z = std::numeric_limits<double>::max();
-    double max_x = std::numeric_limits<double>::lowest();
-    double max_y = std::numeric_limits<double>::lowest();
-    double max_z = std::numeric_limits<double>::lowest();
-
-    fin.seekg(header.offset_to_point_data);
-    const std::size_t first_pass_points = for_each_las_point_chunked(
-        fin, header, chunk_buffer, header_points,
-        [&](int32_t xi, int32_t yi, int32_t zi) {
-            const Point3f p = decode_las_point3f(xi, yi, zi, header);
-            min_x = std::min(min_x, static_cast<double>(p.x));
-            min_y = std::min(min_y, static_cast<double>(p.y));
-            min_z = std::min(min_z, static_cast<double>(p.z));
-            max_x = std::max(max_x, static_cast<double>(p.x));
-            max_y = std::max(max_y, static_cast<double>(p.y));
-            max_z = std::max(max_z, static_cast<double>(p.z));
-            z_vals.push_back(p.z);
-        }
-    );
-
-    if (first_pass_points == 0) {
-        return result;
-    }
-
-    result.num_points = first_pass_points;
-    result.hr98 = percentile(std::move(z_vals), 0.98);
-
-    const double range_x = (plot_size_mode == 0) ? (max_x - min_x) : plot_size_x;
-    const double range_y = (plot_size_mode == 0) ? (max_y - min_y) : plot_size_y;
-    if (range_x <= 0.0 || range_y <= 0.0) {
-        return result;
-    }
-
-    VoxelGrid vg;
-    vg.range_x = range_x;
-    vg.range_y = range_y;
-    vg.grid_range = {range_x, range_y, std::max(0.0, max_z - min_z)};
-    vg.dims = {
-        std::max(1, static_cast<int>(std::ceil(vg.grid_range[0] / voxel_size))),
-        std::max(1, static_cast<int>(std::ceil(vg.grid_range[1] / voxel_size))),
-        std::max(1, static_cast<int>(std::ceil(vg.grid_range[2] / voxel_size))),
-    };
-    vg.data.assign(static_cast<std::size_t>(vg.dims[0]) * vg.dims[1] * vg.dims[2], 0);
-    fin.clear();
-    fin.seekg(header.offset_to_point_data);
-    for_each_las_point_chunked(
-        fin, header, chunk_buffer, first_pass_points,
-        [&](int32_t xi, int32_t yi, int32_t zi) {
-            const Point3f p = decode_las_point3f(xi, yi, zi, header);
-            const double tx = static_cast<double>(p.x) - min_x;
-            const double ty = static_cast<double>(p.y) - min_y;
-            const double tz = static_cast<double>(p.z) - min_z;
-            if (!(tx >= 0.0 && tx < range_x && ty >= 0.0 && ty < range_y)) {
-                return;
-            }
-
-            int ix = static_cast<int>(std::floor(tx / voxel_size));
-            int iy = static_cast<int>(std::floor(ty / voxel_size));
-            int iz = static_cast<int>(std::floor(tz / voxel_size));
-            ix = std::clamp(ix, 0, vg.dims[0] - 1);
-            iy = std::clamp(iy, 0, vg.dims[1] - 1);
-            iz = std::clamp(iz, 0, vg.dims[2] - 1);
-            vg.data[flatten3(ix, iy, iz, vg.dims)] = 1;
-            vg.has_valid_points = true;
-        }
-    );
-
-    result.vg = std::move(vg);
-    result.ok = result.vg.has_valid_points;
-    return result;
-}
-
-#if defined(_WIN32)
-static PackedLasResult read_las_direct_to_packed_grid_mapped(
-    const fs::path& path,
-    double voxel_size,
-    int plot_size_mode,
-    double plot_size_x,
-    double plot_size_y
-) {
-    using Clock = std::chrono::steady_clock;
-    PackedLasResult result;
-    MappedFileView view;
-    const auto io_start = Clock::now();
-    if (!try_map_file_readonly(path, view)) {
-        return result;
-    }
-    result.read_io_s += std::chrono::duration<double>(Clock::now() - io_start).count();
-
-    LasHeader header;
-    if (!parse_las_header_bytes(view.data, view.size, header)) {
-        return result;
-    }
-
-    const std::size_t num_points = static_cast<std::size_t>(header.number_of_points);
-    const std::size_t record_size = static_cast<std::size_t>(header.point_record_length);
-    const std::size_t point_data_offset = static_cast<std::size_t>(header.offset_to_point_data);
-    if (num_points == 0 || num_points > 100000000ull || record_size == 0 || point_data_offset > view.size) {
-        return result;
-    }
-
-    const std::size_t records_available = (view.size - point_data_offset) / record_size;
-    const std::size_t records_to_decode = std::min(num_points, records_available);
-    if (records_to_decode == 0) {
-        return result;
-    }
-
-    const char* record_ptr = view.data + point_data_offset;
-    std::vector<float> z_vals;
-    z_vals.reserve(records_to_decode);
-
-    double min_x = std::numeric_limits<double>::max();
-    double min_y = std::numeric_limits<double>::max();
-    double min_z = std::numeric_limits<double>::max();
-    double max_x = std::numeric_limits<double>::lowest();
-    double max_y = std::numeric_limits<double>::lowest();
-    double max_z = std::numeric_limits<double>::lowest();
-
-    const auto decode_start = Clock::now();
-    for (std::size_t i = 0; i < records_to_decode; ++i) {
-        const char* point_ptr = record_ptr + i * record_size;
-        const int32_t xi = load_le<int32_t>(point_ptr);
-        const int32_t yi = load_le<int32_t>(point_ptr + 4);
-        const int32_t zi = load_le<int32_t>(point_ptr + 8);
-        const Point3f p = decode_las_point3f(xi, yi, zi, header);
-        min_x = std::min(min_x, static_cast<double>(p.x));
-        min_y = std::min(min_y, static_cast<double>(p.y));
-        min_z = std::min(min_z, static_cast<double>(p.z));
-        max_x = std::max(max_x, static_cast<double>(p.x));
-        max_y = std::max(max_y, static_cast<double>(p.y));
-        max_z = std::max(max_z, static_cast<double>(p.z));
-        z_vals.push_back(p.z);
-    }
-    result.read_decode_s += std::chrono::duration<double>(Clock::now() - decode_start).count();
-
-    result.num_points = records_to_decode;
-    const auto percentile_start = Clock::now();
-    result.hr98 = percentile(std::move(z_vals), 0.98);
-    result.read_percentile_s = std::chrono::duration<double>(Clock::now() - percentile_start).count();
-    result.range_x = (plot_size_mode == 0)
-        ? (max_x - min_x)
-        : plot_size_x;
-    result.range_y = (plot_size_mode == 0)
-        ? (max_y - min_y)
-        : plot_size_y;
-    if (result.range_x <= 0.0 || result.range_y <= 0.0) {
-        return result;
-    }
-
-    result.grid_range = {
-        result.range_x,
-        result.range_y,
-        std::max(0.0, max_z - min_z)
-    };
-    result.packed.dims = {
-        std::max(1, static_cast<int>(std::ceil(result.grid_range[0] / voxel_size))),
-        std::max(1, static_cast<int>(std::ceil(result.grid_range[1] / voxel_size))),
-        std::max(1, static_cast<int>(std::ceil(result.grid_range[2] / voxel_size))),
-    };
-    result.packed.words_per_column = std::max(1, (result.packed.dims[2] + 63) / 64);
-    result.packed.words.assign(
-        static_cast<std::size_t>(result.packed.dims[0]) * result.packed.dims[1] * result.packed.words_per_column,
-        0ull
-    );
-
-    const auto pack_start = Clock::now();
-    for (std::size_t i = 0; i < records_to_decode; ++i) {
-        const char* point_ptr = record_ptr + i * record_size;
-        const int32_t xi = load_le<int32_t>(point_ptr);
-        const int32_t yi = load_le<int32_t>(point_ptr + 4);
-        const int32_t zi = load_le<int32_t>(point_ptr + 8);
-        const Point3f p = decode_las_point3f(xi, yi, zi, header);
-        const double tx = static_cast<double>(p.x) - min_x;
-        const double ty = static_cast<double>(p.y) - min_y;
-        const double tz = static_cast<double>(p.z) - min_z;
-        if (!(tx >= 0.0 && tx < result.range_x && ty >= 0.0 && ty < result.range_y)) {
-            continue;
-        }
-
-        int ix = static_cast<int>(std::floor(tx / voxel_size));
-        int iy = static_cast<int>(std::floor(ty / voxel_size));
-        int iz = static_cast<int>(std::floor(tz / voxel_size));
-        ix = std::clamp(ix, 0, result.packed.dims[0] - 1);
-        iy = std::clamp(iy, 0, result.packed.dims[1] - 1);
-        iz = std::clamp(iz, 0, result.packed.dims[2] - 1);
-        const std::size_t word_base =
-            (static_cast<std::size_t>(ix) * result.packed.dims[1] + static_cast<std::size_t>(iy)) *
-            static_cast<std::size_t>(result.packed.words_per_column);
-        result.packed.words[word_base + static_cast<std::size_t>(iz / 64)] |= 1ull << (iz % 64);
-        result.ok = true;
-    }
-    result.read_pack_write_s += std::chrono::duration<double>(Clock::now() - pack_start).count();
-
-    return result;
-}
-#endif
-
-static PackedLasResult read_las_direct_to_packed_grid(
-    const fs::path& path,
-    double voxel_size,
-    int plot_size_mode,
-    double plot_size_x,
-    double plot_size_y
-) {
-#if defined(_WIN32)
-    PackedLasResult mapped = read_las_direct_to_packed_grid_mapped(
-        path, voxel_size, plot_size_mode, plot_size_x, plot_size_y
-    );
-    if (mapped.num_points > 0 || mapped.ok) {
-        return mapped;
-    }
-#endif
-    using Clock = std::chrono::steady_clock;
-    PackedLasResult result;
-    std::vector<char> stream_buffer(1 << 20);
-    std::ifstream fin(path, std::ios::binary);
-    if (!fin.is_open()) {
-        return result;
-    }
-    fin.rdbuf()->pubsetbuf(stream_buffer.data(), static_cast<std::streamsize>(stream_buffer.size()));
-
-    LasHeader header;
-    if (!read_las_header(fin, header)) {
-        return result;
-    }
-
-    const std::size_t header_points = static_cast<std::size_t>(header.number_of_points);
-    if (header_points == 0 || header_points > 100000000ull) {
-        return result;
-    }
-
-    const std::size_t record_size = static_cast<std::size_t>(header.point_record_length);
-    const std::size_t target_chunk_bytes = 8ull * 1024ull * 1024ull;
-    const std::size_t records_per_chunk = std::max<std::size_t>(1, target_chunk_bytes / record_size);
-    std::vector<char> chunk_buffer(records_per_chunk * record_size);
-    std::vector<float> z_vals;
-    z_vals.reserve(header_points);
-
-    double min_x = std::numeric_limits<double>::max();
-    double min_y = std::numeric_limits<double>::max();
-    double min_z = std::numeric_limits<double>::max();
-    double max_x = std::numeric_limits<double>::lowest();
-    double max_y = std::numeric_limits<double>::lowest();
-    double max_z = std::numeric_limits<double>::lowest();
-
-    fin.seekg(header.offset_to_point_data);
-    const auto decode_start = Clock::now();
-    const std::size_t first_pass_points = for_each_las_point_chunked(
-        fin, header, chunk_buffer, header_points,
-        [&](int32_t xi, int32_t yi, int32_t zi) {
-            const Point3f p = decode_las_point3f(xi, yi, zi, header);
-            min_x = std::min(min_x, static_cast<double>(p.x));
-            min_y = std::min(min_y, static_cast<double>(p.y));
-            min_z = std::min(min_z, static_cast<double>(p.z));
-            max_x = std::max(max_x, static_cast<double>(p.x));
-            max_y = std::max(max_y, static_cast<double>(p.y));
-            max_z = std::max(max_z, static_cast<double>(p.z));
-            z_vals.push_back(p.z);
-        }
-    );
-    result.read_decode_s += std::chrono::duration<double>(Clock::now() - decode_start).count();
-
-    if (first_pass_points == 0) {
-        return result;
-    }
-
-    result.num_points = first_pass_points;
-    const auto percentile_start = Clock::now();
-    result.hr98 = percentile(std::move(z_vals), 0.98);
-    result.read_percentile_s = std::chrono::duration<double>(Clock::now() - percentile_start).count();
-    result.range_x = (plot_size_mode == 0)
-        ? (max_x - min_x)
-        : plot_size_x;
-    result.range_y = (plot_size_mode == 0)
-        ? (max_y - min_y)
-        : plot_size_y;
-    if (result.range_x <= 0.0 || result.range_y <= 0.0) {
-        return result;
-    }
-
-    result.grid_range = {
-        result.range_x,
-        result.range_y,
-        std::max(0.0, max_z - min_z)
-    };
-    result.packed.dims = {
-        std::max(1, static_cast<int>(std::ceil(result.grid_range[0] / voxel_size))),
-        std::max(1, static_cast<int>(std::ceil(result.grid_range[1] / voxel_size))),
-        std::max(1, static_cast<int>(std::ceil(result.grid_range[2] / voxel_size))),
-    };
-    result.packed.words_per_column = std::max(1, (result.packed.dims[2] + 63) / 64);
-    result.packed.words.assign(
-        static_cast<std::size_t>(result.packed.dims[0]) * result.packed.dims[1] * result.packed.words_per_column,
-        0ull
-    );
-
-    fin.clear();
-    fin.seekg(header.offset_to_point_data);
-    const auto pack_start = Clock::now();
-    for_each_las_point_chunked(
-        fin, header, chunk_buffer, first_pass_points,
-        [&](int32_t xi, int32_t yi, int32_t zi) {
-            const Point3f p = decode_las_point3f(xi, yi, zi, header);
-            const double tx = static_cast<double>(p.x) - min_x;
-            const double ty = static_cast<double>(p.y) - min_y;
-            const double tz = static_cast<double>(p.z) - min_z;
-            if (!(tx >= 0.0 && tx < result.range_x && ty >= 0.0 && ty < result.range_y)) {
-                return;
-            }
-
-            int ix = static_cast<int>(std::floor(tx / voxel_size));
-            int iy = static_cast<int>(std::floor(ty / voxel_size));
-            int iz = static_cast<int>(std::floor(tz / voxel_size));
-            ix = std::clamp(ix, 0, result.packed.dims[0] - 1);
-            iy = std::clamp(iy, 0, result.packed.dims[1] - 1);
-            iz = std::clamp(iz, 0, result.packed.dims[2] - 1);
-            const std::size_t word_base =
-                (static_cast<std::size_t>(ix) * result.packed.dims[1] + static_cast<std::size_t>(iy)) *
-                static_cast<std::size_t>(result.packed.words_per_column);
-            result.packed.words[word_base + static_cast<std::size_t>(iz / 64)] |= 1ull << (iz % 64);
-            result.ok = true;
-        }
-    );
-    result.read_pack_write_s += std::chrono::duration<double>(Clock::now() - pack_start).count();
-
-    return result;
-}
-
 static ReadResult read_points(const fs::path& path) {
     using Clock = std::chrono::steady_clock;
     ReadResult rr;
@@ -1135,36 +724,56 @@ static ReadResult read_points(const fs::path& path) {
 
     const char* scan = buf.data();
     const char* end = scan + buf.size();
+    if (buf.size() >= 3 &&
+        static_cast<unsigned char>(buf[0]) == 0xEF &&
+        static_cast<unsigned char>(buf[1]) == 0xBB &&
+        static_cast<unsigned char>(buf[2]) == 0xBF) {
+        scan += 3;
+    }
     const auto decode_start = Clock::now();
     while (scan < end) {
-        while (scan < end && (*scan == '\r' || *scan == '\n')) {
-            ++scan;
+        const char* line_end = scan;
+        while (line_end < end && *line_end != '\n' && *line_end != '\r') {
+            ++line_end;
         }
-        if (scan >= end) {
-            break;
+
+        const auto next_line = [&]() {
+            scan = line_end;
+            if (scan < end && *scan == '\r') {
+                ++scan;
+            }
+            if (scan < end && *scan == '\n') {
+                ++scan;
+            }
+        };
+
+        const char* p = skip_ws(scan, line_end);
+        if (p >= line_end) {
+            next_line();
+            continue;
         }
 
         float x = 0.0f;
         float y = 0.0f;
         float z = 0.0f;
-        const char* r = fast_parse_float(scan, end, x);
+        const char* r = fast_parse_float(p, line_end, x);
         if (!r) {
-            break;
+            next_line();
+            continue;
         }
-        r = fast_parse_float(r, end, y);
+        r = fast_parse_float(r, line_end, y);
         if (!r) {
-            break;
+            next_line();
+            continue;
         }
-        r = fast_parse_float(r, end, z);
+        r = fast_parse_float(r, line_end, z);
         if (!r) {
-            break;
+            next_line();
+            continue;
         }
         rr.pts.push_back({x, y, z});
         z_vals.push_back(z);
-        while (r < end && *r != '\n' && *r != '\r') {
-            ++r;
-        }
-        scan = r;
+        next_line();
     }
     rr.read_decode_s = std::chrono::duration<double>(Clock::now() - decode_start).count();
 
@@ -1173,6 +782,43 @@ static ReadResult read_points(const fs::path& path) {
     rr.hr98 = percentile(std::move(z_vals), 0.98);
     rr.read_percentile_s = std::chrono::duration<double>(Clock::now() - percentile_start).count();
     return rr;
+}
+
+static VoxelGrid points_to_voxel_grid_in_frame(
+    const std::vector<Point3f>& points,
+    double voxel_size,
+    const std::array<double, 3>& origin,
+    const std::array<double, 3>& grid_range
+) {
+    VoxelGrid vg;
+    vg.origin = origin;
+    vg.grid_range = grid_range;
+    vg.range_x = grid_range[0];
+    vg.range_y = grid_range[1];
+    vg.dims = {
+        voxel_dim_for_inclusive_range(vg.grid_range[0], voxel_size),
+        voxel_dim_for_inclusive_range(vg.grid_range[1], voxel_size),
+        voxel_dim_for_inclusive_range(vg.grid_range[2], voxel_size),
+    };
+    vg.data.assign(static_cast<std::size_t>(vg.dims[0]) * vg.dims[1] * vg.dims[2], 0);
+
+    for (const auto& p : points) {
+        const double tx = static_cast<double>(p.x) - origin[0];
+        const double ty = static_cast<double>(p.y) - origin[1];
+        const double tz = static_cast<double>(p.z) - origin[2];
+        if (!within_inclusive_extent(tx, grid_range[0]) ||
+            !within_inclusive_extent(ty, grid_range[1]) ||
+            !within_inclusive_extent(tz, grid_range[2])) {
+            continue;
+        }
+
+        const int ix = voxel_index_clamped(tx, voxel_size, vg.dims[0]);
+        const int iy = voxel_index_clamped(ty, voxel_size, vg.dims[1]);
+        const int iz = voxel_index_clamped(tz, voxel_size, vg.dims[2]);
+        vg.data[flatten3(ix, iy, iz, vg.dims)] = 1;
+        vg.has_valid_points = true;
+    }
+    return vg;
 }
 
 static VoxelGrid points_to_voxel_grid(const std::vector<Point3f>& points, double voxel_size, double range_x, double range_y) {
@@ -1198,107 +844,12 @@ static VoxelGrid points_to_voxel_grid(const std::vector<Point3f>& points, double
         max_z = std::max(max_z, static_cast<double>(p.z));
     }
 
-    vg.grid_range[2] = std::max(0.0, max_z - min_z);
-    vg.dims = {
-        std::max(1, static_cast<int>(std::ceil(vg.grid_range[0] / voxel_size))),
-        std::max(1, static_cast<int>(std::ceil(vg.grid_range[1] / voxel_size))),
-        std::max(1, static_cast<int>(std::ceil(vg.grid_range[2] / voxel_size))),
-    };
-    vg.data.assign(static_cast<std::size_t>(vg.dims[0]) * vg.dims[1] * vg.dims[2], 0);
-
-    for (const auto& p : points) {
-        const double tx = static_cast<double>(p.x) - min_x;
-        const double ty = static_cast<double>(p.y) - min_y;
-        const double tz = static_cast<double>(p.z) - min_z;
-        if (!(tx >= 0.0 && tx < range_x && ty >= 0.0 && ty < range_y)) {
-            continue;
-        }
-
-        int ix = static_cast<int>(std::floor(tx / voxel_size));
-        int iy = static_cast<int>(std::floor(ty / voxel_size));
-        int iz = static_cast<int>(std::floor(tz / voxel_size));
-        ix = std::clamp(ix, 0, vg.dims[0] - 1);
-        iy = std::clamp(iy, 0, vg.dims[1] - 1);
-        iz = std::clamp(iz, 0, vg.dims[2] - 1);
-        vg.data[flatten3(ix, iy, iz, vg.dims)] = 1;
-        vg.has_valid_points = true;
-    }
-    return vg;
-}
-
-static PackedColumnGrid build_packed_column_grid(const VoxelGrid& vg) {
-    PackedColumnGrid packed;
-    packed.dims = vg.dims;
-    packed.words_per_column = std::max(1, (vg.dims[2] + 63) / 64);
-    packed.words.assign(
-        static_cast<std::size_t>(vg.dims[0]) * vg.dims[1] * packed.words_per_column,
-        0ull
+    return points_to_voxel_grid_in_frame(
+        points,
+        voxel_size,
+        {min_x, min_y, min_z},
+        {range_x, range_y, std::max(0.0, max_z - min_z)}
     );
-
-    for (int x = 0; x < vg.dims[0]; ++x) {
-        for (int y = 0; y < vg.dims[1]; ++y) {
-            const std::size_t voxel_base = flatten3(x, y, 0, vg.dims);
-            const std::size_t word_base =
-                (static_cast<std::size_t>(x) * vg.dims[1] + static_cast<std::size_t>(y)) *
-                static_cast<std::size_t>(packed.words_per_column);
-            for (int z = 0; z < vg.dims[2]; ++z) {
-                if (!vg.data[voxel_base + static_cast<std::size_t>(z)]) {
-                    continue;
-                }
-                packed.words[word_base + static_cast<std::size_t>(z / 64)] |= 1ull << (z % 64);
-            }
-        }
-    }
-    return packed;
-}
-
-static inline uint64_t extract_packed_column_bits(
-    const PackedColumnGrid& packed,
-    int x,
-    int y,
-    int z
-) {
-    const std::size_t word_base =
-        (static_cast<std::size_t>(x) * packed.dims[1] + static_cast<std::size_t>(y)) *
-        static_cast<std::size_t>(packed.words_per_column);
-    const int word_index = z / 64;
-    const int bit_offset = z % 64;
-    uint64_t bits = packed.words[word_base + static_cast<std::size_t>(word_index)] >> bit_offset;
-    if (bit_offset > 61 && word_index + 1 < packed.words_per_column) {
-        bits |= packed.words[word_base + static_cast<std::size_t>(word_index + 1)] << (64 - bit_offset);
-    }
-    return bits & 0x7ull;
-}
-
-static uint64_t encode_canonical_64_packed_k3(
-    const PackedColumnGrid& packed,
-    int x,
-    int y,
-    int z,
-    int& ones
-) {
-    uint64_t block_bits = 0;
-    ones = 0;
-    for (int ix = 0; ix < 3; ++ix) {
-        for (int iy = 0; iy < 3; ++iy) {
-            const uint64_t column = extract_packed_column_bits(packed, x + ix, y + iy, z);
-            block_bits |= column << ((ix * 3 + iy) * 3);
-            ones += std::popcount(static_cast<unsigned int>(column));
-        }
-    }
-
-    uint64_t best = std::numeric_limits<uint64_t>::max();
-    for (const auto& column_map : kRotationColumnMapsK3) {
-        uint64_t rotated = 0;
-        for (int dst_col = 0; dst_col < 9; ++dst_col) {
-            rotated |= ((block_bits >> (static_cast<uint64_t>(column_map[static_cast<std::size_t>(dst_col)]) * 3ull)) & 0x7ull)
-                << (static_cast<uint64_t>(dst_col) * 3ull);
-        }
-        if (rotated < best) {
-            best = rotated;
-        }
-    }
-    return best;
 }
 
 static uint64_t encode_canonical_64(
@@ -1369,7 +920,7 @@ static uint64_t encode_canonical_64(
     return best;
 }
 
-static PackedFingerprint encode_canonical_generic(
+static PatternFingerprint encode_canonical_generic(
     const VoxelGrid& vg,
     int x,
     int y,
@@ -1379,7 +930,7 @@ static PackedFingerprint encode_canonical_generic(
 ) {
     const int bits = encoder.bits;
     const int word_count = (bits + 63) / 64;
-    PackedFingerprint source;
+    PatternFingerprint source;
     source.words.assign(static_cast<std::size_t>(word_count), 0ull);
     ones = 0;
 
@@ -1399,10 +950,10 @@ static PackedFingerprint encode_canonical_generic(
         }
     }
 
-    PackedFingerprint best;
+    PatternFingerprint best;
     bool has_best = false;
     for (const auto& map : encoder.maps) {
-        PackedFingerprint rotated;
+        PatternFingerprint rotated;
         rotated.words.assign(static_cast<std::size_t>(word_count), 0ull);
         for (int dst = 0; dst < bits; ++dst) {
             const int src = map[static_cast<std::size_t>(dst)];
@@ -1659,9 +1210,6 @@ static FileResult process_one_file(
     double plot_size_x,
     double plot_size_y,
     int layers,
-    bool experimental_direct_las,
-    bool experimental_packed_columns,
-    bool disable_direct_packed_las,
     bool profile_phases
 ) {
     using Clock = std::chrono::steady_clock;
@@ -1680,140 +1228,68 @@ static FileResult process_one_file(
         return static_cast<char>(std::tolower(c));
     });
 
-    const bool can_use_direct_las =
-        experimental_direct_las &&
-        ext == ".las" &&
-        layers == 0;
-    const bool can_use_direct_packed_las =
-        !disable_direct_packed_las &&
-        ext == ".las" &&
-        k_voxel == 3 &&
-        layers == 0;
-
     ReadResult rr;
     VoxelGrid vg;
-    PackedLasResult direct_packed;
-    bool using_direct_packed = false;
-    if (can_use_direct_packed_las) {
-        const auto read_start = Clock::now();
-        direct_packed = read_las_direct_to_packed_grid(
-            fpath, voxel_size, plot_size_mode, plot_size_x, plot_size_y
-        );
-        if (profile_phases) {
-            result.phase_read_s += seconds_since(read_start);
-            result.phase_read_io_s += direct_packed.read_io_s;
-            result.phase_read_decode_s += direct_packed.read_decode_s;
-            result.phase_read_pack_write_s += direct_packed.read_pack_write_s;
-            result.phase_read_percentile_s += direct_packed.read_percentile_s;
-        }
-        result.num_points = direct_packed.num_points;
-        result.hr98 = direct_packed.hr98;
-        if (direct_packed.num_points == 0) {
-            result.status = "empty_input";
-            return result;
-        }
-        if (!direct_packed.ok) {
-            result.status = "no_valid_points";
-            return result;
-        }
-        using_direct_packed = true;
-    } else if (can_use_direct_las) {
-        const auto read_start = Clock::now();
-        const LasDirectResult direct = read_las_direct_to_voxel_grid(
-            fpath, voxel_size, plot_size_mode, plot_size_x, plot_size_y
-        );
-        if (profile_phases) {
-            result.phase_read_s += seconds_since(read_start);
-        }
-        result.num_points = direct.num_points;
-        result.hr98 = direct.hr98;
-        if (direct.num_points == 0) {
-            result.status = "empty_input";
-            return result;
-        }
-        vg = direct.vg;
-        if (!direct.ok) {
-            result.status = "no_valid_points";
-            return result;
-        }
-    } else {
-        const auto read_start = Clock::now();
-        rr = (ext == ".las") ? read_las(fpath) : read_points(fpath);
-        if (profile_phases) {
-            result.phase_read_s += seconds_since(read_start);
-            result.phase_read_io_s += rr.read_io_s;
-            result.phase_read_decode_s += rr.read_decode_s;
-            result.phase_read_pack_write_s += 0.0;
-            result.phase_read_percentile_s += rr.read_percentile_s;
-        }
-        result.num_points = rr.num_points;
-        result.hr98 = rr.hr98;
-        if (rr.num_points == 0) {
-            result.status = "empty_input";
-            return result;
-        }
+    const auto read_start = Clock::now();
+    rr = (ext == ".las") ? read_las(fpath) : read_points(fpath);
+    if (profile_phases) {
+        result.phase_read_s += seconds_since(read_start);
+        result.phase_read_io_s += rr.read_io_s;
+        result.phase_read_decode_s += rr.read_decode_s;
+        result.phase_read_percentile_s += rr.read_percentile_s;
+    }
+    result.num_points = rr.num_points;
+    result.hr98 = rr.hr98;
+    if (rr.num_points == 0) {
+        result.status = "empty_input";
+        return result;
+    }
 
-        double range_x = plot_size_x;
-        double range_y = plot_size_y;
-        if (plot_size_mode == 0) {
-            const auto prep_start = Clock::now();
-            double min_x = std::numeric_limits<double>::max();
-            double min_y = std::numeric_limits<double>::max();
-            double max_x = std::numeric_limits<double>::lowest();
-            double max_y = std::numeric_limits<double>::lowest();
-            for (const auto& p : rr.pts) {
-                min_x = std::min(min_x, static_cast<double>(p.x));
-                min_y = std::min(min_y, static_cast<double>(p.y));
-                max_x = std::max(max_x, static_cast<double>(p.x));
-                max_y = std::max(max_y, static_cast<double>(p.y));
-            }
-            range_x = max_x - min_x;
-            range_y = max_y - min_y;
-            if (profile_phases) {
-                result.phase_prep_s += seconds_since(prep_start);
-            }
+    double range_x = plot_size_x;
+    double range_y = plot_size_y;
+    if (plot_size_mode == 0) {
+        const auto prep_start = Clock::now();
+        double min_x = std::numeric_limits<double>::max();
+        double min_y = std::numeric_limits<double>::max();
+        double max_x = std::numeric_limits<double>::lowest();
+        double max_y = std::numeric_limits<double>::lowest();
+        for (const auto& p : rr.pts) {
+            min_x = std::min(min_x, static_cast<double>(p.x));
+            min_y = std::min(min_y, static_cast<double>(p.y));
+            max_x = std::max(max_x, static_cast<double>(p.x));
+            max_y = std::max(max_y, static_cast<double>(p.y));
         }
-
-        if (range_x <= 0.0 || range_y <= 0.0) {
-            result.status = "invalid_plot_range";
-            return result;
-        }
-
-        const auto voxelize_start = Clock::now();
-        vg = points_to_voxel_grid(rr.pts, voxel_size, range_x, range_y);
+        range_x = max_x - min_x;
+        range_y = max_y - min_y;
         if (profile_phases) {
-            result.phase_voxelize_s += seconds_since(voxelize_start);
-        }
-        if (!vg.has_valid_points) {
-            result.status = "no_valid_points";
-            return result;
+            result.phase_prep_s += seconds_since(prep_start);
         }
     }
 
-    const std::array<int, 3>& active_dims = using_direct_packed ? direct_packed.packed.dims : vg.dims;
-    const double range_x = using_direct_packed ? direct_packed.range_x : vg.range_x;
-    const double range_y = using_direct_packed ? direct_packed.range_y : vg.range_y;
+    if (range_x <= 0.0 || range_y <= 0.0) {
+        result.status = "invalid_plot_range";
+        return result;
+    }
+
+    const auto voxelize_start = Clock::now();
+    vg = points_to_voxel_grid(rr.pts, voxel_size, range_x, range_y);
+    if (profile_phases) {
+        result.phase_voxelize_s += seconds_since(voxelize_start);
+    }
+    if (!vg.has_valid_points) {
+        result.status = "no_valid_points";
+        return result;
+    }
+
+    const std::array<int, 3>& active_dims = vg.dims;
+    range_x = vg.range_x;
+    range_y = vg.range_y;
 
     const FastBlockEncoder encoder(k_voxel);
     const int voxel_block_size = k_voxel * k_voxel * k_voxel;
     const int half_k = k_voxel / 2;
     const bool use_u64 = voxel_block_size <= 64;
     const auto l_di_lookup = build_l_di_lookup(voxel_block_size);
-    const bool use_packed_k3 =
-        !using_direct_packed &&
-        experimental_packed_columns &&
-        use_u64 &&
-        k_voxel == 3 &&
-        active_dims[2] > 0;
-    PackedColumnGrid packed_vg;
-    if (use_packed_k3) {
-        const auto pack_start = Clock::now();
-        packed_vg = build_packed_column_grid(vg);
-        if (profile_phases) {
-            result.phase_voxelize_s += seconds_since(pack_start);
-        }
-    }
-
     int total_blocks = 0;
     const double block_length = static_cast<double>(k_voxel) * voxel_size;
     const double stat_grid_size = static_cast<double>(block_ratio) * block_length;
@@ -1823,7 +1299,7 @@ static FileResult process_one_file(
     result.grid_nx = nx;
     result.grid_ny = ny;
     result.grid_nz = nz;
-    result.base_area = range_x * range_y;
+    const double base_area = range_x * range_y;
 
     double soe_sum = 0.0;
     const std::array<double, 3> entropy_grid_range = {
@@ -1832,7 +1308,6 @@ static FileResult process_one_file(
         std::max(result.hr98, stat_grid_size)
     };
     const EntropyGridInfo entropy_info = make_entropy_grid_info(entropy_grid_range, nx, ny, nz);
-    std::vector<int> global_cell_counts(static_cast<std::size_t>(entropy_info.cell_count), 0);
     const double block_center_offset = (static_cast<double>(half_k) + 0.5) * voxel_size;
 
     if (use_u64) {
@@ -1846,11 +1321,7 @@ static FileResult process_one_file(
             for (int y = 0; y <= active_dims[1] - k_voxel; y += k_voxel) {
                 for (int z = 0; z <= active_dims[2] - k_voxel; z += k_voxel) {
                     int ones = 0;
-                    const uint64_t fp = using_direct_packed
-                        ? encode_canonical_64_packed_k3(direct_packed.packed, x, y, z, ones)
-                        : (use_packed_k3
-                        ? encode_canonical_64_packed_k3(packed_vg, x, y, z, ones)
-                        : encode_canonical_64(vg, x, y, z, encoder, ones));
+                    const uint64_t fp = encode_canonical_64(vg, x, y, z, encoder, ones);
                     if (ones == 0) {
                         continue;
                     }
@@ -1867,7 +1338,6 @@ static FileResult process_one_file(
                     }
                     ++rec.count;
                     increment_cell_count(rec, pattern_cell_counts, cell_index, entropy_info.cell_count);
-                    ++global_cell_counts[static_cast<std::size_t>(cell_index)];
                 }
             }
         }
@@ -1892,15 +1362,13 @@ static FileResult process_one_file(
                 entropy_info.cell_count
             );
             soe_sum += (l_dict_i + l_data_i) * bi_pair.second;
-            result.Iw_total += l_dict_i;
-            result.Ib_total += l_data_i;
         }
         result.num_patterns = static_cast<int>(patterns.size());
         if (profile_phases) {
             result.phase_reduce_entropy_s += seconds_since(reduce_start);
         }
     } else {
-        std::unordered_map<PackedFingerprint, PatternStats, PackedFingerprintHash> patterns;
+        std::unordered_map<PatternFingerprint, PatternStats, PatternFingerprintHash> patterns;
         patterns.reserve(static_cast<std::size_t>(active_dims[0] * active_dims[1]));
         std::vector<int> pattern_cell_counts;
         reserve_pattern_cell_pool(pattern_cell_counts, active_dims, k_voxel, entropy_info.cell_count);
@@ -1910,7 +1378,7 @@ static FileResult process_one_file(
             for (int y = 0; y <= active_dims[1] - k_voxel; y += k_voxel) {
                 for (int z = 0; z <= active_dims[2] - k_voxel; z += k_voxel) {
                     int ones = 0;
-                    PackedFingerprint fp = encode_canonical_generic(vg, x, y, z, encoder, ones);
+                    PatternFingerprint fp = encode_canonical_generic(vg, x, y, z, encoder, ones);
                     if (ones == 0) {
                         continue;
                     }
@@ -1927,7 +1395,6 @@ static FileResult process_one_file(
                     }
                     ++rec.count;
                     increment_cell_count(rec, pattern_cell_counts, cell_index, entropy_info.cell_count);
-                    ++global_cell_counts[static_cast<std::size_t>(cell_index)];
                 }
             }
         }
@@ -1952,8 +1419,6 @@ static FileResult process_one_file(
                 entropy_info.cell_count
             );
             soe_sum += (l_dict_i + l_data_i) * bi_pair.second;
-            result.Iw_total += l_dict_i;
-            result.Ib_total += l_data_i;
         }
         result.num_patterns = static_cast<int>(patterns.size());
         if (profile_phases) {
@@ -1962,16 +1427,7 @@ static FileResult process_one_file(
     }
 
     result.total_blocks = total_blocks;
-    result.Ic_total = result.Iw_total + result.Ib_total;
-    result.DSO_raw = soe_sum;
-    result.DSO = (result.base_area > 0.0) ? (soe_sum / result.base_area) : 0.0;
-    const auto global_entropy_start = Clock::now();
-    const auto global_pair = spatial_entropy_dense(global_cell_counts, total_blocks, entropy_info.cell_count);
-    if (profile_phases) {
-        result.phase_reduce_entropy_s += seconds_since(global_entropy_start);
-    }
-    result.H_sp_Global = global_pair.first;
-    result.H_sp_Global_norm = global_pair.second;
+    result.DSO = (base_area > 0.0) ? (soe_sum / base_area) : 0.0;
     result.status = "ok";
 
     if (layers > 0 && !rr.pts.empty()) {
@@ -2005,27 +1461,17 @@ static FileResult process_one_file(
                     continue;
                 }
 
-                VoxelGrid lvg = points_to_voxel_grid(layer_points, voxel_size, range_x, range_y);
+                const std::array<double, 3> layer_origin = {vg.origin[0], vg.origin[1], z_lo};
+                const std::array<double, 3> layer_range = {range_x, range_y, z_hi - z_lo};
+                VoxelGrid lvg = points_to_voxel_grid_in_frame(layer_points, voxel_size, layer_origin, layer_range);
                 if (!lvg.has_valid_points) {
                     continue;
                 }
-                const bool use_layer_packed_k3 =
-                    experimental_packed_columns &&
-                    use_u64 &&
-                    k_voxel == 3 &&
-                    lvg.dims[2] > 0;
-                PackedColumnGrid layer_packed_vg;
-                if (use_layer_packed_k3) {
-                    layer_packed_vg = build_packed_column_grid(lvg);
-                }
-
                 const double lstat = static_cast<double>(block_ratio) * block_length;
                 const int lnx = std::max(1, static_cast<int>(std::ceil(lvg.range_x / lstat)));
                 const int lny = std::max(1, static_cast<int>(std::ceil(lvg.range_y / lstat)));
                 const int lnz = std::max(1, static_cast<int>(std::ceil((z_hi - z_lo) / lstat)));
-                std::vector<std::array<double, 3>> layer_all_coords;
                 double layer_soe = 0.0;
-                double layer_ic = 0.0;
                 int layer_total_blocks = 0;
 
                 if (use_u64) {
@@ -2034,9 +1480,7 @@ static FileResult process_one_file(
                         for (int y = 0; y <= lvg.dims[1] - k_voxel; y += k_voxel) {
                             for (int z = 0; z <= lvg.dims[2] - k_voxel; z += k_voxel) {
                                 int ones = 0;
-                                const uint64_t fp = use_layer_packed_k3
-                                    ? encode_canonical_64_packed_k3(layer_packed_vg, x, y, z, ones)
-                                    : encode_canonical_64(lvg, x, y, z, encoder, ones);
+                                const uint64_t fp = encode_canonical_64(lvg, x, y, z, encoder, ones);
                                 if (ones == 0) {
                                     continue;
                                 }
@@ -2058,23 +1502,20 @@ static FileResult process_one_file(
                         continue;
                     }
 
-                    layer_all_coords.reserve(static_cast<std::size_t>(layer_total_blocks));
                     for (auto& kv : layer_patterns) {
                         auto& rec = kv.second;
-                        layer_all_coords.insert(layer_all_coords.end(), rec.coords.begin(), rec.coords.end());
                         const double ldi = l_di_lookup[static_cast<std::size_t>(rec.ones)];
                         const double ldata = calc_ldata_item(rec.count, layer_total_blocks);
                         const auto lbi = spatial_entropy(rec.coords, lvg.grid_range, {lnx, lny, lnz});
                         layer_soe += (ldi + ldata) * lbi.second;
-                        layer_ic += ldi + ldata;
                     }
                 } else {
-                    std::unordered_map<PackedFingerprint, PatternStats, PackedFingerprintHash> layer_patterns;
+                    std::unordered_map<PatternFingerprint, PatternStats, PatternFingerprintHash> layer_patterns;
                     for (int x = 0; x <= lvg.dims[0] - k_voxel; x += k_voxel) {
                         for (int y = 0; y <= lvg.dims[1] - k_voxel; y += k_voxel) {
                             for (int z = 0; z <= lvg.dims[2] - k_voxel; z += k_voxel) {
                                 int ones = 0;
-                                PackedFingerprint fp = encode_canonical_generic(lvg, x, y, z, encoder, ones);
+                                PatternFingerprint fp = encode_canonical_generic(lvg, x, y, z, encoder, ones);
                                 if (ones == 0) {
                                     continue;
                                 }
@@ -2096,22 +1537,16 @@ static FileResult process_one_file(
                         continue;
                     }
 
-                    layer_all_coords.reserve(static_cast<std::size_t>(layer_total_blocks));
                     for (auto& kv : layer_patterns) {
                         auto& rec = kv.second;
-                        layer_all_coords.insert(layer_all_coords.end(), rec.coords.begin(), rec.coords.end());
                         const double ldi = l_di_lookup[static_cast<std::size_t>(rec.ones)];
                         const double ldata = calc_ldata_item(rec.count, layer_total_blocks);
                         const auto lbi = spatial_entropy(rec.coords, lvg.grid_range, {lnx, lny, lnz});
                         layer_soe += (ldi + ldata) * lbi.second;
-                        layer_ic += ldi + ldata;
                     }
                 }
 
-                const auto global_bi = spatial_entropy(layer_all_coords, lvg.grid_range, {lnx, lny, lnz});
-                layer.DSO = (result.base_area > 0.0) ? (layer_soe / result.base_area) : 0.0;
-                layer.Ic = layer_ic;
-                layer.Hsp_norm = global_bi.second;
+                layer.DSO = (base_area > 0.0) ? (layer_soe / base_area) : 0.0;
             }
         }
         if (profile_phases) {
@@ -2144,8 +1579,8 @@ int run_cli(int argc, char* argv[]) {
         std::cerr << "Input directory not found: " << args.input_dir << "\n";
         return 1;
     }
-    if (args.k_voxel <= 0) {
-        std::cerr << "--k-voxel must be positive\n";
+    if (args.k_voxel != 3 && args.k_voxel != 5 && args.k_voxel != 7) {
+        std::cerr << "--k-voxel must be one of 3, 5, or 7\n";
         return 1;
     }
     if (args.voxel_size <= 0.0) {
@@ -2223,9 +1658,6 @@ int run_cli(int argc, char* argv[]) {
                 args.plot_size_x,
                 args.plot_size_y,
                 args.layers,
-                args.experimental_direct_las,
-                args.experimental_packed_columns,
-                args.disable_direct_packed_las,
                 args.profile_phases
             );
         } catch (const std::bad_alloc&) {
@@ -2242,6 +1674,9 @@ int run_cli(int argc, char* argv[]) {
             std::lock_guard<std::mutex> lock(print_mutex);
             std::cout << "[" << results[static_cast<std::size_t>(i)].status << "] "
                       << results[static_cast<std::size_t>(i)].source_file << "\n";
+            if (results[static_cast<std::size_t>(i)].status == "alloc_error") {
+                std::cout << "  memory allocation failed; try a larger --voxel-size, --k-voxel 3, fewer --threads, or a smaller plot/input\n";
+            }
         }
     }
 
@@ -2254,7 +1689,6 @@ int run_cli(int argc, char* argv[]) {
         double total_read = 0.0;
         double total_read_io = 0.0;
         double total_read_decode = 0.0;
-        double total_read_pack_write = 0.0;
         double total_read_percentile = 0.0;
         double total_prep = 0.0;
         double total_voxelize = 0.0;
@@ -2265,7 +1699,6 @@ int run_cli(int argc, char* argv[]) {
             total_read += r.phase_read_s;
             total_read_io += r.phase_read_io_s;
             total_read_decode += r.phase_read_decode_s;
-            total_read_pack_write += r.phase_read_pack_write_s;
             total_read_percentile += r.phase_read_percentile_s;
             total_prep += r.phase_prep_s;
             total_voxelize += r.phase_voxelize_s;
@@ -2281,10 +1714,9 @@ int run_cli(int argc, char* argv[]) {
         };
         std::cout << "Phase Profile\n";
         print_phase("  read", total_read);
-        if (total_read_io > 0.0 || total_read_decode > 0.0 || total_read_pack_write > 0.0 || total_read_percentile > 0.0) {
+        if (total_read_io > 0.0 || total_read_decode > 0.0 || total_read_percentile > 0.0) {
             print_phase("    read_io", total_read_io);
             print_phase("    read_decode", total_read_decode);
-            print_phase("    read_pack_write", total_read_pack_write);
             print_phase("    read_percentile", total_read_percentile);
         }
         print_phase("  prep", total_prep);
