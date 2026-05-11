@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace tdso {
+namespace so3d {
 
 struct LayerResult {
     double DSO = 0.0;
@@ -35,5 +35,5 @@ struct FileResult {
     double phase_layers_s = 0.0;
 };
 
-} // namespace tdso
+} // namespace so3d
 

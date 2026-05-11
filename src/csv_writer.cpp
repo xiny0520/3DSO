@@ -1,4 +1,4 @@
-#include "tdso/csv_writer.hpp"
+#include "so3d/csv_writer.hpp"
 
 #include <fstream>
 #include <ostream>
@@ -7,7 +7,7 @@
 
 namespace fs = std::filesystem;
 
-namespace tdso {
+namespace so3d {
 
 static std::string csv_escape(std::string_view value) {
     bool needs_quotes = false;
@@ -90,5 +90,5 @@ bool write_results_csv(
     return true;
 }
 
-} // namespace tdso
+} // namespace so3d
 

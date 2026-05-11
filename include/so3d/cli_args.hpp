@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <iosfwd>
 
-namespace tdso {
+namespace so3d {
 
 struct CliArgs {
     std::filesystem::path input_dir = "data";
@@ -25,5 +25,5 @@ struct CliArgs {
 void print_usage(std::ostream& os);
 CliArgs parse_args(int argc, char* argv[]);
 
-} // namespace tdso
+} // namespace so3d
 

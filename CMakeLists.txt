@@ -25,7 +25,7 @@ include(CheckIPOSupported)
 add_library(3dso_core STATIC
     src/cli_args.cpp
     src/csv_writer.cpp
-    src/tdso_engine.cpp
+    src/so3d_engine.cpp
 )
 add_library(3dso::core ALIAS 3dso_core)
 

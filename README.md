@@ -7,11 +7,25 @@ The repository is kept as a compact source-code release.
 ## Repository Structure
 
 ```text
-include/        Public C++ headers
+include/so3d/   Public C++ headers
 src/            C++ source files
 CMakeLists.txt  CMake build script
 LICENSE         License file
 ```
+
+## Naming
+
+`3DSO` is the project name and `3dso` is the command-line executable name.
+
+`so3d` is used only where C++ requires an identifier, such as the header include path and namespace:
+
+```cpp
+#include "so3d/so3d.hpp"
+
+int status = so3d::run_cli(argc, argv);
+```
+
+The output metric name remains `3DSO`.
 
 ## Build
 

@@ -1,11 +1,11 @@
-#include "tdso/cli_args.hpp"
+#include "so3d/cli_args.hpp"
 
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 
-namespace tdso {
+namespace so3d {
 
 void print_usage(std::ostream& os) {
     os
@@ -93,5 +93,5 @@ CliArgs parse_args(int argc, char* argv[]) {
     return args;
 }
 
-} // namespace tdso
+} // namespace so3d
 

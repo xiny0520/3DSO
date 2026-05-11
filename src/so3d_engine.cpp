@@ -1,6 +1,6 @@
-#include "tdso/cli_args.hpp"
-#include "tdso/csv_writer.hpp"
-#include "tdso/results.hpp"
+#include "so3d/cli_args.hpp"
+#include "so3d/csv_writer.hpp"
+#include "so3d/results.hpp"
 
 #include <algorithm>
 #include <array>
@@ -41,7 +41,7 @@
 
 namespace fs = std::filesystem;
 
-namespace tdso {
+namespace so3d {
 
 struct RotationMap {
     std::array<int, 3> axes;
@@ -1729,5 +1729,5 @@ int run_cli(int argc, char* argv[]) {
     return 0;
 }
 
-} // namespace tdso
+} // namespace so3d
 

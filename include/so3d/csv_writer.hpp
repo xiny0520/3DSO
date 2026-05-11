@@ -1,12 +1,12 @@
 #pragma once
 
-#include "tdso/results.hpp"
+#include "so3d/results.hpp"
 
 #include <filesystem>
 #include <iosfwd>
 #include <vector>
 
-namespace tdso {
+namespace so3d {
 
 bool write_results_csv(
     const std::filesystem::path& output_csv,
@@ -15,5 +15,5 @@ bool write_results_csv(
     std::ostream& err
 );
 
-} // namespace tdso
+} // namespace so3d
 
