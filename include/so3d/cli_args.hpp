@@ -16,7 +16,6 @@ struct CliArgs {
     double plot_size_y = 25.0;
     int threads = 0;
     int limit = 0;
-    int layers = 0;
     bool verbose = false;
     bool profile_phases = false;
     bool show_help = false;

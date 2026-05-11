@@ -1209,7 +1209,6 @@ static FileResult process_one_file(
     int plot_size_mode,
     double plot_size_x,
     double plot_size_y,
-    int layers,
     bool profile_phases
 ) {
     using Clock = std::chrono::steady_clock;
@@ -1430,130 +1429,6 @@ static FileResult process_one_file(
     result.DSO = (base_area > 0.0) ? (soe_sum / base_area) : 0.0;
     result.status = "ok";
 
-    if (layers > 0 && !rr.pts.empty()) {
-        const auto layers_start = Clock::now();
-        std::vector<float> z_values;
-        z_values.reserve(rr.pts.size());
-        for (const auto& p : rr.pts) {
-            z_values.push_back(p.z);
-        }
-        const double rh2 = percentile(z_values, 0.02);
-        const double rh98 = percentile(std::move(z_values), 0.98);
-        const double span = rh98 - rh2;
-
-        result.layers.resize(static_cast<std::size_t>(layers));
-        if (span > 0.0) {
-            for (int li = 0; li < layers; ++li) {
-                const double z_lo = rh2 + span * (static_cast<double>(li) / static_cast<double>(layers));
-                const double z_hi = rh2 + span * (static_cast<double>(li + 1) / static_cast<double>(layers));
-                std::vector<Point3f> layer_points;
-                layer_points.reserve(rr.pts.size() / static_cast<std::size_t>(layers) + 16);
-                for (const auto& p : rr.pts) {
-                    const bool in_layer =
-                        (li == layers - 1) ? (p.z >= z_lo && p.z <= z_hi) : (p.z >= z_lo && p.z < z_hi);
-                    if (in_layer) {
-                        layer_points.push_back(p);
-                    }
-                }
-                auto& layer = result.layers[static_cast<std::size_t>(li)];
-                layer.num_points = layer_points.size();
-                if (layer_points.empty()) {
-                    continue;
-                }
-
-                const std::array<double, 3> layer_origin = {vg.origin[0], vg.origin[1], z_lo};
-                const std::array<double, 3> layer_range = {range_x, range_y, z_hi - z_lo};
-                VoxelGrid lvg = points_to_voxel_grid_in_frame(layer_points, voxel_size, layer_origin, layer_range);
-                if (!lvg.has_valid_points) {
-                    continue;
-                }
-                const double lstat = static_cast<double>(block_ratio) * block_length;
-                const int lnx = std::max(1, static_cast<int>(std::ceil(lvg.range_x / lstat)));
-                const int lny = std::max(1, static_cast<int>(std::ceil(lvg.range_y / lstat)));
-                const int lnz = std::max(1, static_cast<int>(std::ceil((z_hi - z_lo) / lstat)));
-                double layer_soe = 0.0;
-                int layer_total_blocks = 0;
-
-                if (use_u64) {
-                    std::unordered_map<uint64_t, PatternStats> layer_patterns;
-                    for (int x = 0; x <= lvg.dims[0] - k_voxel; x += k_voxel) {
-                        for (int y = 0; y <= lvg.dims[1] - k_voxel; y += k_voxel) {
-                            for (int z = 0; z <= lvg.dims[2] - k_voxel; z += k_voxel) {
-                                int ones = 0;
-                                const uint64_t fp = encode_canonical_64(lvg, x, y, z, encoder, ones);
-                                if (ones == 0) {
-                                    continue;
-                                }
-                                ++layer_total_blocks;
-                                auto& rec = layer_patterns[fp];
-                                if (rec.count == 0) {
-                                    rec.ones = ones;
-                                }
-                                ++rec.count;
-                                rec.coords.push_back({
-                                    (static_cast<double>(x) + half_k + 0.5) * voxel_size,
-                                    (static_cast<double>(y) + half_k + 0.5) * voxel_size,
-                                    (static_cast<double>(z) + half_k + 0.5) * voxel_size,
-                                });
-                            }
-                        }
-                    }
-                    if (layer_total_blocks == 0 || layer_patterns.empty()) {
-                        continue;
-                    }
-
-                    for (auto& kv : layer_patterns) {
-                        auto& rec = kv.second;
-                        const double ldi = l_di_lookup[static_cast<std::size_t>(rec.ones)];
-                        const double ldata = calc_ldata_item(rec.count, layer_total_blocks);
-                        const auto lbi = spatial_entropy(rec.coords, lvg.grid_range, {lnx, lny, lnz});
-                        layer_soe += (ldi + ldata) * lbi.second;
-                    }
-                } else {
-                    std::unordered_map<PatternFingerprint, PatternStats, PatternFingerprintHash> layer_patterns;
-                    for (int x = 0; x <= lvg.dims[0] - k_voxel; x += k_voxel) {
-                        for (int y = 0; y <= lvg.dims[1] - k_voxel; y += k_voxel) {
-                            for (int z = 0; z <= lvg.dims[2] - k_voxel; z += k_voxel) {
-                                int ones = 0;
-                                PatternFingerprint fp = encode_canonical_generic(lvg, x, y, z, encoder, ones);
-                                if (ones == 0) {
-                                    continue;
-                                }
-                                ++layer_total_blocks;
-                                auto& rec = layer_patterns[fp];
-                                if (rec.count == 0) {
-                                    rec.ones = ones;
-                                }
-                                ++rec.count;
-                                rec.coords.push_back({
-                                    (static_cast<double>(x) + half_k + 0.5) * voxel_size,
-                                    (static_cast<double>(y) + half_k + 0.5) * voxel_size,
-                                    (static_cast<double>(z) + half_k + 0.5) * voxel_size,
-                                });
-                            }
-                        }
-                    }
-                    if (layer_total_blocks == 0 || layer_patterns.empty()) {
-                        continue;
-                    }
-
-                    for (auto& kv : layer_patterns) {
-                        auto& rec = kv.second;
-                        const double ldi = l_di_lookup[static_cast<std::size_t>(rec.ones)];
-                        const double ldata = calc_ldata_item(rec.count, layer_total_blocks);
-                        const auto lbi = spatial_entropy(rec.coords, lvg.grid_range, {lnx, lny, lnz});
-                        layer_soe += (ldi + ldata) * lbi.second;
-                    }
-                }
-
-                layer.DSO = (base_area > 0.0) ? (layer_soe / base_area) : 0.0;
-            }
-        }
-        if (profile_phases) {
-            result.phase_layers_s += seconds_since(layers_start);
-        }
-    }
-
     return result;
 }
 
@@ -1607,11 +1482,6 @@ int run_cli(int argc, char* argv[]) {
         std::cerr << "--limit must be >= 0\n";
         return 1;
     }
-    if (args.layers < 0) {
-        std::cerr << "--layers must be >= 0\n";
-        return 1;
-    }
-
     std::vector<fs::path> files;
     for (const auto& entry : fs::directory_iterator(args.input_dir)) {
         if (!entry.is_regular_file()) {
@@ -1657,7 +1527,6 @@ int run_cli(int argc, char* argv[]) {
                 args.plot_size_mode,
                 args.plot_size_x,
                 args.plot_size_y,
-                args.layers,
                 args.profile_phases
             );
         } catch (const std::bad_alloc&) {
@@ -1680,7 +1549,7 @@ int run_cli(int argc, char* argv[]) {
         }
     }
 
-    if (!write_results_csv(args.output_csv, results, args.layers, std::cerr)) {
+    if (!write_results_csv(args.output_csv, results, std::cerr)) {
         return 1;
     }
 
@@ -1694,7 +1563,6 @@ int run_cli(int argc, char* argv[]) {
         double total_voxelize = 0.0;
         double total_scan = 0.0;
         double total_reduce = 0.0;
-        double total_layers = 0.0;
         for (const auto& r : results) {
             total_read += r.phase_read_s;
             total_read_io += r.phase_read_io_s;
@@ -1704,10 +1572,9 @@ int run_cli(int argc, char* argv[]) {
             total_voxelize += r.phase_voxelize_s;
             total_scan += r.phase_scan_blocks_s;
             total_reduce += r.phase_reduce_entropy_s;
-            total_layers += r.phase_layers_s;
         }
         const double total_profile =
-            total_read + total_prep + total_voxelize + total_scan + total_reduce + total_layers;
+            total_read + total_prep + total_voxelize + total_scan + total_reduce;
         const auto print_phase = [total_profile](const char* name, double seconds) {
             const double pct = (total_profile > 0.0) ? (seconds * 100.0 / total_profile) : 0.0;
             std::cout << name << ": " << seconds << " s (" << pct << "%)\n";
@@ -1723,7 +1590,6 @@ int run_cli(int argc, char* argv[]) {
         print_phase("  voxelize", total_voxelize);
         print_phase("  scan_blocks", total_scan);
         print_phase("  reduce_entropy", total_reduce);
-        print_phase("  layers", total_layers);
         std::cout << "  total_profiled: " << total_profile << " s\n";
     }
     return 0;

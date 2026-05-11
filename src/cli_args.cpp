@@ -16,7 +16,6 @@ void print_usage(std::ostream& os) {
         << "  --voxel-size FLOAT     Voxel size in meters (default: 0.1)\n"
         << "  --block-ratio INT      Spatial entropy grid ratio (default: 5)\n"
         << "  --plot-size MODE X Y   Plot size: MODE 0=auto, 1=manual (default: 1 25 25)\n"
-        << "  --layers INT           Split into N height layers, 0=off\n"
         << "  --verbose              Print per-file status lines during processing\n"
         << "  --profile-phases       Print aggregated phase timings after processing\n"
         << "  --threads INT          Thread count, 0=all\n"
@@ -78,8 +77,6 @@ CliArgs parse_args(int argc, char* argv[]) {
             args.threads = parse_int_arg(next("--threads"), "--threads");
         } else if (arg == "--limit") {
             args.limit = parse_int_arg(next("--limit"), "--limit");
-        } else if (arg == "--layers") {
-            args.layers = parse_int_arg(next("--layers"), "--layers");
         } else if (arg == "--verbose") {
             args.verbose = true;
         } else if (arg == "--profile-phases") {

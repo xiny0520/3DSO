@@ -2,14 +2,8 @@
 
 #include <cstddef>
 #include <string>
-#include <vector>
 
 namespace so3d {
-
-struct LayerResult {
-    double DSO = 0.0;
-    std::size_t num_points = 0;
-};
 
 struct FileResult {
     std::string plot_id;
@@ -23,7 +17,6 @@ struct FileResult {
     int grid_ny = 0;
     int grid_nz = 0;
     std::string status;
-    std::vector<LayerResult> layers;
     double phase_read_s = 0.0;
     double phase_read_io_s = 0.0;
     double phase_read_decode_s = 0.0;
@@ -32,7 +25,6 @@ struct FileResult {
     double phase_voxelize_s = 0.0;
     double phase_scan_blocks_s = 0.0;
     double phase_reduce_entropy_s = 0.0;
-    double phase_layers_s = 0.0;
 };
 
 } // namespace so3d

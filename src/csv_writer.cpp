@@ -34,33 +34,12 @@ static std::string csv_escape(std::string_view value) {
     return escaped;
 }
 
-static std::string build_csv_header(int layer_count) {
-    std::string header =
-        "PlotID,SourceFile,3DSO,NumPatterns,TotalBlocks,HR98,Nx,Ny,Nz,NumPoints,Status";
-    for (int li = 0; li < layer_count; ++li) {
-        header += ",3DSO_L" + std::to_string(li + 1);
-    }
-    for (int li = 0; li < layer_count; ++li) {
-        header += ",Npts_L" + std::to_string(li + 1);
-    }
-    return header;
-}
-
-static void write_layer_values(std::ofstream& fout, const FileResult& result, int layer_count) {
-    for (int li = 0; li < layer_count; ++li) {
-        const auto idx = static_cast<std::size_t>(li);
-        fout << "," << ((idx < result.layers.size()) ? result.layers[idx].DSO : 0.0);
-    }
-    for (int li = 0; li < layer_count; ++li) {
-        const auto idx = static_cast<std::size_t>(li);
-        fout << "," << ((idx < result.layers.size()) ? result.layers[idx].num_points : 0);
-    }
-}
+static constexpr const char* kCsvHeader =
+    "PlotID,SourceFile,3DSO,NumPatterns,TotalBlocks,HR98,Nx,Ny,Nz,NumPoints,Status";
 
 bool write_results_csv(
     const fs::path& output_csv,
     const std::vector<FileResult>& results,
-    int layer_count,
     std::ostream& err
 ) {
     if (!output_csv.parent_path().empty()) {
@@ -74,7 +53,7 @@ bool write_results_csv(
     }
 
     fout << "\xEF\xBB\xBF";
-    fout << build_csv_header(layer_count) << "\n";
+    fout << kCsvHeader << "\n";
     fout << std::fixed;
 
     for (const auto& result : results) {
@@ -84,7 +63,6 @@ bool write_results_csv(
              << result.hr98 << ","
              << result.grid_nx << "," << result.grid_ny << "," << result.grid_nz << ","
              << result.num_points << "," << csv_escape(result.status);
-        write_layer_values(fout, result, layer_count);
         fout << "\n";
     }
     return true;
